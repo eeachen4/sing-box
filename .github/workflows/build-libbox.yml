@@ -1,0 +1,86 @@
+name: Build Libbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      sing_box_ref:
+        description: "sing-box tag, branch, or commit to build"
+        required: true
+        default: "v1.13.14"
+      go_version:
+        description: "Go version used by actions/setup-go"
+        required: true
+        default: "stable"
+      upload_release:
+        description: "Upload Libbox.xcframework.zip to a GitHub Release"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Libbox.xcframework
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout sing-box
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sing_box_ref }}
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: false
+
+      - name: Clone sing-box-for-apple
+        run: git clone --depth 1 https://github.com/SagerNet/sing-box-for-apple.git ../sing-box-for-apple
+
+      - name: Install gomobile and gobind
+        run: make lib_install
+
+      - name: Build Libbox.xcframework
+        run: make lib_apple
+
+      - name: Verify framework output
+        run: test -d ../sing-box-for-apple/Libbox.xcframework
+
+      - name: Package artifact
+        run: ditto -c -k --sequesterRsrc --keepParent ../sing-box-for-apple/Libbox.xcframework Libbox.xcframework.zip
+
+      - name: Prepare artifact names
+        id: artifact
+        env:
+          SING_BOX_REF: ${{ inputs.sing_box_ref }}
+        run: |
+          safe_ref="${SING_BOX_REF//\//-}"
+          echo "name=Libbox-${safe_ref}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=libbox-${safe_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: Libbox.xcframework.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload GitHub Release asset
+        if: inputs.upload_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ steps.artifact.outputs.release_tag }}" >/dev/null 2>&1 || \
+            gh release create "${{ steps.artifact.outputs.release_tag }}" \
+              --title "${{ steps.artifact.outputs.name }}" \
+              --notes "Libbox.xcframework built from sing-box ref ${{ inputs.sing_box_ref }}."
+          gh release upload "${{ steps.artifact.outputs.release_tag }}" Libbox.xcframework.zip --clobber
